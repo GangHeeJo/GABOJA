@@ -23,6 +23,8 @@ data class TripState(
     val leg: Int = 0,
     val progKm: Double = 0.0,
     val extraKm: Double = 0.0,
+    /** Roads already driven on a leg that was changed half way (the map keeps drawing them). */
+    val trail: List<List<Pt>> = emptyList(),
     val rated: Map<String, Rating> = emptyMap(),
     val visits: Map<String, Set<Int>> = emptyMap(),
     val fail: List<String> = emptyList(),
@@ -41,11 +43,13 @@ data class TripState(
 /**
  * The trip, step by step: plan, drive, arrive, change route, low fuel, charge. Pure Kotlin so it can be tested
  * without a car. The screens only show [state] and call these functions.
+ * [geometry] gives every leg its real road line for the map; without it legs are drawn as straight lines.
  */
 class TripEngine(
     private val planner: Planner,
     private val rerouter: Rerouter,
     private val roads: RoadData,
+    private val geometry: RouteGeometry? = null,
     private val rnd: () -> Double = { Math.random() },
 ) {
     private val _state = MutableStateFlow(TripState())
@@ -53,6 +57,17 @@ class TripEngine(
 
     private fun update(f: TripState.() -> TripState) { _state.value = _state.value.f() }
     private fun TripState.say(text: String) = copy(tts = text, log = (log + text).takeLast(60))
+
+    /** The road between two places, always at least two points. */
+    private fun segment(a: Place, b: Place): List<Pt> = geometry?.path(a, b)?.takeIf { it.size >= 2 } ?: listOf(kmXY(a), kmXY(b))
+
+    /** The road of leg [k]: its own path if it has one, otherwise from the previous stop to its destination. */
+    fun legPoints(c: Course, k: Int): List<Pt> {
+        val leg = c.legs[k]
+        leg.path?.let { if (it.size >= 2) return it }
+        val from = if (k == 0) HOME else c.legs[k - 1].to ?: HOME
+        return segment(from, leg.to ?: HOME)
+    }
 
     fun setConditions(c: Conditions) = update { copy(cond = c) }
 
@@ -67,7 +82,7 @@ class TripEngine(
             return
         }
         update {
-            copy(screen = Screen.DRIVING, course = course, leg = 0, progKm = 0.0, extraKm = 0.0, rated = emptyMap(), visits = emptyMap(),
+            copy(screen = Screen.DRIVING, course = course, leg = 0, progKm = 0.0, extraKm = 0.0, trail = emptyList(), rated = emptyMap(), visits = emptyMap(),
                 offer = 0, charge = null, alert = null, fail = emptyList())
                 .say("오늘의 첫 번째 장소는 ${course.legs[0].min}분 뒤 공개됩니다. 안전하게 출발하세요.")
         }
@@ -137,9 +152,12 @@ class TripEngine(
         copy(visits = visits + (placeId to if (index in cur) cur - index else cur + index))
     }
 
-    fun reset() = update { copy(screen = Screen.INPUT, course = null, charge = null, alert = null, leg = 0, progKm = 0.0, extraKm = 0.0) }
+    fun reset() = update { copy(screen = Screen.INPUT, course = null, charge = null, alert = null, leg = 0, progKm = 0.0, extraKm = 0.0, trail = emptyList()) }
 
-    /** Change the stops ahead, from a stop (exact distances) or from the middle of a leg (go on, or turn back). */
+    /**
+     * Change the stops ahead, from a stop (exact distances) or from the middle of a leg (go on to the old target,
+     * or turn back to the previous stop). The new first leg carries its own road line starting at the car.
+     */
     fun reroute(cmd: Cmd) {
         val s = _state.value
         val c = s.course ?: return
@@ -150,11 +168,21 @@ class TripEngine(
         val prev = if (s.leg == 0) HOME else c.legs[s.leg - 1].to ?: HOME
         val t = if (l.km > 0) (s.progKm / l.km).coerceIn(0.0, 1.0) else 1.0
         val aheadMin = (l.min * (1 - t)).roundToInt()
-        val reach: (Place) -> Reach = if (atStop) { x -> Reach(roads.km(dest, x), roads.min(dest, x)) } else { x ->
+        val cur = legPoints(c, s.leg)
+        val here = along(cur, t)
+        val ahead = listOf(here.p) + cur.drop(here.k)        // from the car to the end of this leg
+        val behind = cur.take(here.k) + here.p               // what has been driven on this leg
+        fun seg(a: Place, b: Place) = if (a.id == b.id) emptyList() else segment(a, b)
+
+        /** How far and how long a place is from here, and the road line to it. */
+        val choose: (Place) -> Pair<Reach, List<Pt>> = if (atStop) { x -> Reach(roads.km(dest, x), roads.min(dest, x)) to seg(dest, x) } else { x ->
             val viaForward = (l.km - s.progKm) + roads.km(dest, x)
             val viaBack = if (l.virtual) Double.POSITIVE_INFINITY else s.progKm + roads.km(prev, x) // a changed leg can only go on; change again at the next stop
-            if (viaForward <= viaBack) Reach(viaForward, aheadMin + roads.min(dest, x)) else Reach(viaBack, (l.min - aheadMin) + roads.min(prev, x))
+            if (viaForward <= viaBack) Reach(viaForward, aheadMin + roads.min(dest, x)) to (ahead + seg(dest, x))
+            else Reach(viaBack, (l.min - aheadMin) + roads.min(prev, x)) to (behind.reversed() + seg(prev, x))
         }
+        val reach: (Place) -> Reach = { choose(it).first }
+
         val keep = if (atStop) s.leg + 1 else s.leg
         val visited = c.legs.take(keep).mapNotNull { it.to }
         val upcoming = c.legs.drop(keep).mapNotNull { it.to }
@@ -162,15 +190,16 @@ class TripEngine(
             is RerouteResult.Refused -> update { say(r.message) }
             is RerouteResult.Ok -> {
                 val up = r.upcoming
-                val r0 = reach(up.firstOrNull() ?: HOME)
-                val legs2 = mutableListOf(Leg(up.firstOrNull(), r0.km, r0.min, virtual = !atStop))
+                val (r0, path0) = choose(up.firstOrNull() ?: HOME)
+                val legs2 = mutableListOf(Leg(up.firstOrNull(), r0.km, r0.min, virtual = !atStop, path = path0.takeIf { it.size >= 2 }))
                 for (i in 1 until up.size) legs2 += Leg(up[i], roads.km(up[i - 1], up[i]), roads.min(up[i - 1], up[i]))
                 if (up.isNotEmpty()) legs2 += Leg(null, roads.km(up.last(), HOME), roads.min(up.last(), HOME))
                 val legs = c.legs.take(keep) + legs2
                 val tail = if (up.isNotEmpty()) "새 목적지는 ${legs2[0].min}분 뒤 공개돼요." else "집까지 ${legs2[0].min}분 걸려요."
                 update {
                     copy(course = c.copy(stops = visited + up, legs = legs, totalKm = legs.sumOf { it.km } + extraKm + (if (atStop) 0.0 else s.progKm)),
-                        progKm = if (atStop) progKm else 0.0, extraKm = if (atStop) extraKm else extraKm + s.progKm)
+                        progKm = if (atStop) progKm else 0.0, extraKm = if (atStop) extraKm else extraKm + s.progKm,
+                        trail = if (atStop) trail else trail + listOf(behind))
                         .say("${r.message} $tail")
                 }
             }

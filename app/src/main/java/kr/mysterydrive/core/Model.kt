@@ -43,7 +43,8 @@ val HOME = Place("home", "서울", "", 37.5665, 126.978, 0, 0, "", "")
 data class Conditions(val timeMin: Int = 240, val budget: Int = 100_000, val maxKm: Int = 150, val mood: String = "랜덤", val who: String = "연인")
 
 /** One drive: [to] is null for the final leg back home. A [virtual] leg starts from the car's current spot, not from a stop. */
-data class Leg(val to: Place?, val km: Double, val min: Int, val virtual: Boolean = false)
+/** [path] is set when the road is not simply "from the previous stop to [to]" (a changed route starts from where the car is). */
+data class Leg(val to: Place?, val km: Double, val min: Int, val virtual: Boolean = false, val path: List<Pt>? = null)
 
 data class Course(val stops: List<Place>, val legs: List<Leg>, val totalKm: Double, val totalMin: Int, val cost: Int, val socAfter: Double)
 

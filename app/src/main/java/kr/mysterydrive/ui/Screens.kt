@@ -74,7 +74,7 @@ fun MysteryApp(vm: TripViewModel) {
                     else -> Row(Modifier.fillMaxSize()) {
                         Box(Modifier.weight(0.46f).fillMaxHeight()) { key(s.screen, s.leg) { LeftPane(s, ui, vm) } }
                         Box(Modifier.width(1.dp).fillMaxHeight().background(Pal.Line))
-                        Box(Modifier.weight(0.54f).fillMaxHeight()) { RoutePanel(s) }
+                        Box(Modifier.weight(0.54f).fillMaxHeight()) { MapPanel(s, vm.geometry) }
                     }
                 }
                 if (s.alert != null && s.screen == Screen.DRIVING) AlertCard(s, vm, Modifier.align(Alignment.TopCenter))

@@ -19,6 +19,7 @@ import kr.mysterydrive.core.Planner
 import kr.mysterydrive.core.Rating
 import kr.mysterydrive.core.Rerouter
 import kr.mysterydrive.core.RoadData
+import kr.mysterydrive.core.RouteGeometry
 import kr.mysterydrive.core.TourData
 import kr.mysterydrive.core.TripEngine
 import kr.mysterydrive.core.TripState
@@ -45,7 +46,9 @@ data class UiState(
 class TripViewModel(app: Application) : AndroidViewModel(app) {
     private val roads = RoadData.fromJson(app.assets.open("roads.json").bufferedReader().use { it.readText() })
     val tour = TourData.fromJson(app.assets.open("tour.json").bufferedReader().use { it.readText() })
-    private val engine = TripEngine(Planner(roads), Rerouter(roads), roads)
+    /** Real road lines for the map (assets/routes.json). */
+    val geometry = RouteGeometry.fromJson(app.assets.open("routes.json").bufferedReader().use { it.readText() })
+    private val engine = TripEngine(Planner(roads), Rerouter(roads), roads, geometry)
 
     val trip: StateFlow<TripState> = engine.state
     private val _ui = MutableStateFlow(UiState())
