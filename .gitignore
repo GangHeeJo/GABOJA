@@ -1,0 +1,10 @@
+build/
+.gradle/
+local.properties
+.idea/
+*.iml
+# Hyundai font: licence for redistribution not confirmed, keep it out of the repository
+app/src/main/assets/fonts/
+local.properties
+# local demo APK that contains the Hyundai font
+dist-local/
